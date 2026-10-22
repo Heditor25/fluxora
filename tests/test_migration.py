@@ -246,7 +246,10 @@ class TestParseRenamesTable:
 class TestParseEntrypointCountClaim:
     def test_extracts_v1_count(self, real_doc):
         count = vm.parse_entrypoint_count_claim(real_doc)
-        assert count == 16
+        # 16 after the v1 rewrite, 17 once `create_stream_with_curve` (#1815)
+        # was added to the core surface.
+        core, _ = vm.classify_entrypoints(vm.load_abi())
+        assert count == len(core)
 
     def test_returns_none_when_absent(self):
         assert vm.parse_entrypoint_count_claim("# No counts here") is None

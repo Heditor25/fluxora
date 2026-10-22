@@ -49,6 +49,10 @@ const PURE_READS: &[&str] = &[
     "refundable_of",
     "stream_count",
     "stream_exists",
+    // Contract-level emergency halt (#1818): the operator and the halt flag
+    // are readable at every moment, including while the contract is halted.
+    "halted",
+    "halt_operator",
 ];
 
 /// Read-like maintenance calls whose whole job is to extend TTL. They must
@@ -202,8 +206,9 @@ fn refundable_of_writes_nothing() {
 }
 
 #[test]
-fn stream_count_writes_nothing() {
+fn stream_count_is_permissionless_and_writes_nothing() {
     let (h, _, _) = fixture();
+    h.env.mock_auths(&[]);
     assert_pure(&h, "stream_count", || {
         assert_eq!(h.client.stream_count(), 2);
     });
@@ -231,6 +236,35 @@ fn all_pure_reads_together_write_nothing() {
         h.client.refundable_of(&a);
         h.client.stream_count();
         h.client.stream_exists(&a);
+        h.client.halted();
+        h.client.halt_operator();
+    });
+}
+
+/// The halt flag is a pure read: answering it must not touch storage.
+#[test]
+fn halted_writes_nothing() {
+    let (h, _, _) = fixture();
+    h.client.set_halt_operator(&h.sender);
+    assert_pure(&h, "halted(unhalted)", || {
+        assert!(!h.client.halted());
+    });
+    h.client.halt();
+    assert_pure(&h, "halted(engaged)", || {
+        assert!(h.client.halted());
+    });
+}
+
+/// The installed operator is a pure read, before and after a halt.
+#[test]
+fn halt_operator_writes_nothing() {
+    let (h, _, _) = fixture();
+    assert_pure(&h, "halt_operator(unset)", || {
+        assert_eq!(h.client.halt_operator(), None);
+    });
+    h.client.set_halt_operator(&h.sender);
+    assert_pure(&h, "halt_operator(set)", || {
+        assert_eq!(h.client.halt_operator(), Some(h.sender.clone()));
     });
 }
 

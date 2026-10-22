@@ -76,7 +76,7 @@ enum Account {
 /// Kept as a value so the tests can iterate it. `names_and_discriminants_match_the_abi_fixture`
 /// pins its length to `DISCRIMINANT_FIXTURE`, which is itself pinned to
 /// `LAST_DISCRIMINANT`, so dropping an entry here fails the suite.
-const ALL: [Error; 33] = [
+const ALL: [Error; 46] = [
     Error::StreamNotFound,
     Error::InvalidTimeRange,
     Error::InvalidCliff,
@@ -110,6 +110,19 @@ const ALL: [Error; 33] = [
     Error::InvalidTopUp,
     Error::TokenAmountMismatch,
     Error::VestedDecreased,
+    Error::ContractHalted,
+    Error::HaltOperatorAlreadySet,
+    Error::HaltOperatorNotSet,
+    Error::ContractAlreadyHalted,
+    Error::ContractNotHalted,
+    Error::PoolBalanceDrift,
+    Error::InvalidReferenceLength,
+    Error::FactoryPaused,
+    Error::DepositExceedsCap,
+    Error::DurationBelowMinimum,
+    Error::TokenNotAllowlisted,
+    Error::RateBelowMin,
+    Error::RateAboveMax,
 ];
 
 /// Frozen allowlist of discriminants that have no reaching test, in ascending
@@ -148,6 +161,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -170,6 +184,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -192,6 +207,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -214,6 +230,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -236,6 +253,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -430,6 +448,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -466,6 +485,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -494,6 +514,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -601,6 +622,7 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                         &true,
                         &true,
                         &true,
+                        &None,
                     )
                     .unwrap_err()
                     .unwrap()
@@ -617,11 +639,175 @@ fn describe(e: Error) -> (&'static str, u32, Account) {
                  mutation those four paths can make — pause/resume keep elapsed \
                  time identical, `top_up` scales numerator and denominator \
                  together, and a recipient change does not enter the formula — \
-                 so 33 is unreachable. The guard stays because the invariant it \
-                 protects is load-bearing.",
+                 so 33 is unreachable. `test::vested_decreased` searches \
+                 randomized operation sequences against paused, cliffed and \
+                 near-maximum streams and confirms no trigger. The guard stays \
+                 because the invariant it protects is load-bearing.",
             ),
         ),
+
+        // --- Rebase detection -------------------------------------------------------------------
+        Error::PoolBalanceDrift => (
+            "PoolBalanceDrift",
+            39,
+            Account::Reach(super::rebase_drift::drift_error),
+        ),
+
+        // --- Contract-level emergency halt (#1818) -------------------------------
+        Error::ContractHalted => (
+            "ContractHalted",
+            34,
+            Account::Reach(|h| {
+                h.client.set_halt_operator(&h.sender);
+                h.client.halt();
+                let now = h.now();
+                h.client
+                    .try_create_stream(
+                        &h.sender,
+                        &h.recipient,
+                        &h.token,
+                        &(1_000 * ONE),
+                        &now,
+                        &(now + 10 * DAY),
+                        &now,
+                        &true,
+                        &true,
+                        &true,
+                        &None,
+                    )
+                    .unwrap_err()
+                    .unwrap()
+            }),
+        ),
+        Error::HaltOperatorAlreadySet => (
+            "HaltOperatorAlreadySet",
+            35,
+            Account::Reach(|h| {
+                h.client.set_halt_operator(&h.sender);
+                h.client
+                    .try_set_halt_operator(&h.sender)
+                    .unwrap_err()
+                    .unwrap()
+            }),
+        ),
+        Error::HaltOperatorNotSet => (
+            "HaltOperatorNotSet",
+            36,
+            Account::Reach(|h| h.client.try_halt().unwrap_err().unwrap()),
+        ),
+        Error::ContractAlreadyHalted => (
+            "ContractAlreadyHalted",
+            37,
+            Account::Reach(|h| {
+                h.client.set_halt_operator(&h.sender);
+                h.client.halt();
+                h.client.try_halt().unwrap_err().unwrap()
+            }),
+        ),
+        Error::ContractNotHalted => (
+            "ContractNotHalted",
+            38,
+            Account::Reach(|h| {
+                h.client.set_halt_operator(&h.sender);
+                h.client.try_resume_contract().unwrap_err().unwrap()
+            }),
+        ),
+        Error::InvalidReferenceLength => (
+            "InvalidReferenceLength",
+            40,
+            Account::Reach(|h| {
+                let now = h.now();
+                let long_ref = soroban_sdk::String::from_str(
+                    &h.env,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                );
+                h.client
+                    .try_create_stream(
+                        &h.sender,
+                        &h.recipient,
+                        &h.token,
+                        &(1_000 * ONE),
+                        &now,
+                        &(now + DAY),
+                        &now,
+                        &true,
+                        &true,
+                        &true,
+                        &Some(long_ref),
+                    )
+                    .unwrap_err()
+                    .unwrap()
+            }),
+        ),
+        Error::FactoryPaused => (
+            "FactoryPaused",
+            41,
+            Account::Reach(|h| factory_error(h, Error::FactoryPaused)),
+        ),
+        Error::DepositExceedsCap => (
+            "DepositExceedsCap",
+            42,
+            Account::Reach(|h| factory_error(h, Error::DepositExceedsCap)),
+        ),
+        Error::DurationBelowMinimum => (
+            "DurationBelowMinimum",
+            43,
+            Account::Reach(|h| factory_error(h, Error::DurationBelowMinimum)),
+        ),
+        Error::TokenNotAllowlisted => (
+            "TokenNotAllowlisted",
+            44,
+            Account::Reach(|h| factory_error(h, Error::TokenNotAllowlisted)),
+        ),
+        Error::RateBelowMin => (
+            "RateBelowMin",
+            45,
+            Account::Reach(|h| factory_error(h, Error::RateBelowMin)),
+        ),
+        Error::RateAboveMax => (
+            "RateAboveMax",
+            46,
+            Account::Reach(|h| factory_error(h, Error::RateAboveMax)),
+        ),
     }
+}
+
+/// Exercise each policy refusal through the public stream-to-factory call.
+fn factory_error(h: &Harness, expected: Error) -> Error {
+    use fluxora_factory::{FluxoraFactory, FluxoraFactoryClient};
+    let factory_id = h.env.register(FluxoraFactory, ());
+    let factory = FluxoraFactoryClient::new(&h.env, &factory_id);
+    let deposit = 1_000 * ONE;
+    let duration = 100 * DAY;
+    let rate = deposit / duration as i128;
+    factory.init(&h.sender, &h.contract_id, &(10_000 * ONE), &1);
+    factory.set_allowlist(&h.token, &true);
+    match expected {
+        Error::FactoryPaused => factory.set_factory_paused(&true),
+        Error::DepositExceedsCap => factory.set_cap(&(100 * ONE)),
+        Error::DurationBelowMinimum => factory.set_min_duration(&(duration + 1)),
+        Error::TokenNotAllowlisted => factory.set_allowlist(&h.token, &false),
+        Error::RateBelowMin => factory.set_rate_bounds(&Some(rate + 1), &None),
+        Error::RateAboveMax => factory.set_rate_bounds(&None, &Some(rate - 1)),
+        _ => panic!("not a factory policy error"),
+    }
+    let now = h.now();
+    h.client
+        .try_create_stream_via_factory(
+            &factory_id,
+            &h.sender,
+            &h.recipient,
+            &h.token,
+            &deposit,
+            &now,
+            &(now + duration),
+            &now,
+            &true,
+            &true,
+            &true,
+        )
+        .unwrap_err()
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------------

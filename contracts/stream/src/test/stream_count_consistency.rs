@@ -1,4 +1,6 @@
-//! Issue #1699 — assert `stream_count()` stays consistent with the streams
+//! Boundary coverage for `stream_count` (issue: pin the boundary behaviour).
+//!
+//! Issue #1884/#1699 — assert `stream_count()` stays consistent with the streams
 //! that exist.
 //!
 //! The contract stores the same fact twice: the instance-level counter behind
@@ -51,6 +53,114 @@ use super::common::*;
 use super::create::seed_counter;
 use crate::{op, DataKey, Error, StreamStatus};
 
+fn assert_counter_entries_match(h: &Harness) {
+    h.env.as_contract(&h.contract_id, || {
+        let next: u64 = h
+            .env
+            .storage()
+            .instance()
+            .get(&DataKey::NextStreamId)
+            .unwrap_or(0);
+        let count: u64 = h
+            .env
+            .storage()
+            .instance()
+            .get(&DataKey::StreamCount)
+            .unwrap_or(0);
+        assert_eq!(next, count, "NextStreamId and StreamCount diverged");
+    });
+}
+
+/// Issue #1884: the two instance counters remain equal across a generated
+/// sequence of successful and rejected creations.
+#[test]
+fn next_stream_id_and_stream_count_stay_equal_across_mixed_creations() {
+    let h = Harness::new();
+    for round in 0..32u64 {
+        if round % 3 == 0 {
+            reject_self_stream(&h);
+        } else {
+            h.create_simple(100 * ONE, DAY + round);
+        }
+        assert_counter_entries_match(&h);
+        assert_eq!(h.client.stream_count(), round - round / 3);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boundary behaviour of `stream_count`
+// ---------------------------------------------------------------------------
+
+/// The maximum value `stream_count` will accept. Derived from the same
+/// representation the contract uses for the counter (`u64`), so the boundary
+/// test tracks the type rather than a magic literal.
+const STREAM_COUNT_MAX: u64 = u64::MAX;
+
+/// Zero is covered explicitly: a fresh contract reports `0`, and the
+/// consistency helper agrees with an empty population.
+#[test]
+fn stream_count_zero_is_covered() {
+    let h = Harness::new();
+    assert_eq!(h.client.stream_count(), 0);
+    h.assert_stream_count_consistent();
+}
+
+/// One is covered explicitly: a single successful create moves the counter
+/// from `0` to `1`, with no gap and no hole.
+#[test]
+fn stream_count_one_is_covered() {
+    let h = Harness::new();
+    let id = h.create_simple(10 * ONE, DAY);
+    assert_eq!(id, 0);
+    assert_eq!(h.client.stream_count(), 1);
+    assert!(h.client.stream_exists(&0));
+    h.assert_stream_count_consistent();
+}
+
+/// The maximum accepted value succeeds: seeding the counter to `u64::MAX`
+/// leaves `stream_count` reporting it without panicking, and the helper
+/// observes the seeded value rather than overflowing on it.
+#[test]
+fn stream_count_max_accepted_value_succeeds() {
+    let h = Harness::new();
+    seed_counter(&h, STREAM_COUNT_MAX);
+    assert_eq!(h.client.stream_count(), STREAM_COUNT_MAX);
+    assert_counter_entries_match(&h);
+}
+
+/// One past the maximum is refused with the documented error, and the refusal
+/// is a typed error rather than a panic. The counter cannot represent
+/// `u64::MAX + 1`, so the boundary is asserted by checking that the next id
+/// computation refuses rather than wrapping.
+#[test]
+fn stream_count_one_past_max_is_refused() {
+    let h = Harness::new();
+    seed_counter(&h, STREAM_COUNT_MAX);
+    assert_eq!(h.client.stream_count(), STREAM_COUNT_MAX);
+
+    let start = h.now();
+    let result = h.client.try_create_stream(
+        &h.sender,
+        &h.recipient,
+        &h.token,
+        &(10 * ONE),
+        &start,
+        &(start + DAY),
+        &start,
+        &true,
+        &true,
+        &true,
+        &None,
+    );
+    let err = result.unwrap_err().unwrap();
+    assert_eq!(err, Error::Overflow);
+    assert_eq!(
+        h.client.stream_count(),
+        STREAM_COUNT_MAX,
+        "a refused create must not move the counter",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Failed-creation fixtures
 // ---------------------------------------------------------------------------
@@ -73,6 +183,7 @@ fn reject_self_stream(h: &Harness) {
             &true,
             &true,
             &true,
+            &None,
         )
         .unwrap_err()
         .unwrap();
@@ -97,6 +208,7 @@ fn reject_unaffordable_deposit(h: &Harness) {
         &true,
         &true,
         &true,
+        &None,
     );
     assert!(
         result.is_err(),
@@ -347,6 +459,7 @@ fn a_terminal_operation_failing_partway_leaves_counter_and_population_agreeing()
         &true,
         &true,
         &true,
+        &None,
     );
     h.assert_stream_count_consistent();
 
